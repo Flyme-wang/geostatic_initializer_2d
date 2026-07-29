@@ -19,6 +19,7 @@ class GeostaticInitializerForm(AFXForm):
         self.outputDirKw = AFXStringKeyword(self.cmd, "output_dir", True, "")
         self.gravityKw = AFXFloatKeyword(self.cmd, "gravity", True, 10.0)
         self.k0Kw = AFXFloatKeyword(self.cmd, "k0", True, 1.0)
+        self.methodKw = AFXStringKeyword(self.cmd, "method", True, "tin")
 
     def getFirstDialog(self):
         return GeostaticInitializerDB(self)

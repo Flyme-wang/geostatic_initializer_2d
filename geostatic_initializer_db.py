@@ -34,6 +34,17 @@ class GeostaticInitializerDB(AFXDataDialog):
             JUSTIFY_LEFT,
         )
 
+        method_gb = FXGroupBox(self, "Solving method", FRAME_GROOVE | LAYOUT_FILL_X)
+        self.method_tin = AFXRadioButton(method_gb, "TIN Interpolation (Fortran SIGINI, fast)", None, 0, LAYOUT_FILL_X)
+        self.method_precompute = AFXRadioButton(method_gb, "Pre-compute & Direct Assign (no Fortran, robust)", None, 0, LAYOUT_FILL_X)
+        self.method_tin.setCheck(True)
+        self.method_tin.setSelector(1000 + 1)
+        self.method_precompute.setSelector(1000 + 2)
+        FXMAPFUNC(self, SEL_COMMAND, 1000 + 1, GeostaticInitializerDB.onCmdMethod)
+        FXMAPFUNC(self, SEL_COMMAND, 1000 + 2, GeostaticInitializerDB.onCmdMethod)
+        self.method_value = "tin"
+        form.methodKw.setValue("tin")
+
         for label, message_id in (
             ("Inspect model", self.ID_INSPECT),
             ("Generate and apply", self.ID_GENERATE),
@@ -41,4 +52,12 @@ class GeostaticInitializerDB(AFXDataDialog):
         ):
             self.appendActionButton(label, self, message_id)
             FXMAPFUNC(self, SEL_COMMAND, message_id, AFXDataDialog.onCmdApply)
+    def onCmdMethod(self, sender, sel, ptr):
+        if sender == self.method_tin:
+            self.method_value = "tin"
+            self.form.methodKw.setValue("tin")
+        elif sender == self.method_precompute:
+            self.method_value = "precompute"
+            self.form.methodKw.setValue("precompute")
+
         self.appendActionButton(self.CANCEL)

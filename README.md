@@ -1,26 +1,51 @@
-# Geostatic Initializer 2D
+# Geostatic Initializer v2 -- 2D/3D Geostatic Stress Initialization
 
 **English** | [中文](#中文说明)
 
-This Abaqus/CAE plugin generates a project-local
-`generate_geostatic_initial_fields.py` and `initial_fields_generated.for` pair.
-It detects regions removed in the first analysis step and excludes those staged
-deposits from initial stress and pore pressure. This is required for
-`Model-3Layer-Screenshot-22000`: only `Part-Gray` is initialized; `Part-Purple`
-and `Part-LightRed` enter later without inherited initial stress or pressure.
+> **v2 New:** 3D model support (C3D8/C3D20...), dual solving methods (TIN Fortran / Pre-compute Direct Assign), auto-detect 2D/3D, Z-axis vertical convention.
+
+Abaqus/CAE plugin that generates initial geostatic stress and pore pressure fields for layered soil/rock models. Detects regions removed by ModelChange and excludes staged deposits.
+
+---
+
+## v2 What's New
+
+| Feature | v1 (2D only) | v2 |
+|---------|-------------|-----|
+| Element types | CPE*, CAX* | + C3D4/6/8/10/20 (solid & pore) |
+| Coordinate convention | X=horizontal, Y=vertical | X,Y=horizontal, **Z=vertical upward** |
+| Solving method | Fortran SIGINI | Fortran SIGINI **or** Pre-compute Direct Assign |
+| GUI method selector | -- | Radio button: TIN / Pre-compute |
+| Auto-detection | -- | Auto-routes 2D/3D based on element types |
+| Complex geometry | Columnar mesh only | Pre-compute handles pinch-outs, lenses |
+
+### Solving Methods
+
+**Method 1: TIN Interpolation (Fortran SIGINI)**
+- Fast runtime interpolation via Fortran user subroutine
+- Generates `initial_fields_generated_3d.for` with TIN barycentric lookup
+- Best for columnar/extruded meshes
+
+**Method 2: Pre-compute & Direct Assign (No Fortran)**
+- Python pre-computes all element stresses and node pore pressures
+- Injects `*INITIAL CONDITIONS, TYPE=STRESS` directly into keyword block
+- No Fortran compiler required
+- Handles complex geometry (pinch-outs, lenses, irregular layering)
+- Stress values visible and auditable in `.inp` file
+
+---
 
 ## Install
 
-Copy the complete `geostatic_initializer_2d` directory into an Abaqus plugin
-search directory, for example:
+Copy the complete `geostatic_initializer_2d` directory into an Abaqus plugin directory:
 
-```text
+```
 C:\Users\<user>\abaqus_plugins\geostatic_initializer_2d
 ```
 
-Or copy into the version-specific plugin path:
+Or version-specific:
 
-```text
+```
 # Abaqus 2024
 <install>\EstProducts\2024\win_b64\code\python3.10\lib\abaqus_plugins\
 
@@ -31,115 +56,80 @@ Or copy into the version-specific plugin path:
 <install>\EstProducts\2026\win_b64\code\python3.10\lib\abaqus_plugins\
 ```
 
-Restart Abaqus/CAE. The command appears at
-`Plug-ins -> Geostatic Initializer 2D` in the Property, Load, Mesh, and Job
-modules.
+Restart Abaqus/CAE. Plugin: `Plug-ins -> Geostatic Initializer v2 (2D/3D)`.
 
 ## Use
 
-1. Mesh the 2D layered model and configure its first geostatic/deposition step.
-2. Open the plugin and run **Inspect model**.
-3. Enter an existing job name and a project output directory.
-4. Run **Generate and apply**. The plugin creates active assembly sets, injects
-   one guarded `*INITIAL CONDITIONS, TYPE=STRESS, USER` block and, for coupled
-   models, one pore-pressure USER block, then binds the generated `.for` to the
-   job. It does not submit the job.
-5. Run **Write input and audit** before submission.
+1. Mesh model, configure first geostatic/deposition step.
+2. Open plugin, select method: **TIN** or **Pre-compute**.
+3. Run **Inspect model**.
+4. Enter job name and output directory.
+5. Run **Generate and apply**.
+6. Run **Write input and audit** before submission.
 
-The project-local Python entry can be run later inside Abaqus/CAE to regenerate
-the sibling Fortran file after geometry, mesh, or material changes.
+### 3D Models
 
-## Current limits
+- Z-axis = **vertical upward** (ground = max Z), gravity = -Z
+- C3D4, C3D6, C3D8/R, C3D10, C3D15, C3D20/R + pore variants
+- One material per instance (use section assignments for multi-material)
 
-- Two-dimensional planar or axisymmetric layered continuum meshes only.
-- Multiple section/material assignments in one instance are split by local
-  element label and mapped in `SIGINI` using `GETPARTINFO`.
-- Constant density, void ratio, saturation, fluid specific weight, and K0.
-- Supported linear pore elements are listed in `geostatic_initializer_core.py`.
-- Profiles are extracted from element free-boundary edges, so a valid mapped
-  CPE4/CPE4P mesh may use different x stations on its upper, lower, and internal
-  rows. Each material region must still have exactly two continuous,
-  single-valued, non-crossing upper/lower boundary chains; holes, branches, and
-  non-single-valued boundaries are blocked instead of guessed.
-- Initial head follows the active local ground surface. Perched or disconnected
-  aquifers are not supported.
-- Every porous region must have readable, active void-ratio and saturation
-  fields; missing or ambiguous coverage blocks generation instead of defaulting.
-- When one instance contains multiple porous section regions with independent
-  void-ratio or saturation fields, the current kernel cannot yet disambiguate
-  those fields by section-node coverage and blocks generation explicitly.
-- Abaqus/CAE does not expose USER-defined `SIGINI` stress through its initial
-  condition API. The MVP therefore injects a marker-guarded model-data keyword
-  block and uses `keywordBlock` again for input auditing.
-- The kernel API calls that create union assembly sets and edit `keywordBlock`
-  require a live Abaqus/CAE validation pass before production analysis.
+## Files
+
+```
+geostatic_initializer_2d/
+├── geostatic_initializer_core.py               # 2D core
+├── geostatic_initializer_core_3d.py            # 3D core: TIN, free-face extraction
+├── geostatic_initializer_solver.py             # v2: TIN/Raycast/Precompute methods
+├── geostatic_initializer_generator.py          # 2D Fortran generator
+├── geostatic_initializer_generator_3d.py       # 3D Fortran generator (TIN)
+├── geostatic_initializer_generator_precompute.py  # v2: keyword-block generator
+├── geostatic_initializer_kernel.py             # CAE adapter, method router
+├── geostatic_initializer_form.py               # AFX command form
+├── geostatic_initializer_db.py                 # AFX dialog (method selector)
+├── geostatic_initializer_plugin.py             # Plugin registration
+└── README.md
+```
+
+---
 
 ---
 
 ## 中文说明
 
-**[English](#geostatic-initializer-2d)** | 中文
+> **v2 新增:** 三维模型支持（C3D8/C3D20 等）、双求解方法选择、2D/3D 自动检测、Z 轴垂直向上惯例。
 
-本插件为 Abaqus/CAE 插件，用于自动生成二维分层模型的自重初始应力场和孔隙水压力场。
-插件会在项目目录下生成 `generate_geostatic_initial_fields.py` 和
-`initial_fields_generated.for` 文件对。它能自动检测第一个分析步中被"杀死"
-（model change remove）的区域，并将这些分期填筑体排除在初始应力和孔压之外。
+### v2 新特性
 
-### 安装
+| 功能 | v1（仅二维） | v2 |
+|------|------------|-----|
+| 单元类型 | CPE*, CAX* | + C3D4/6/8/10/20（实体及孔压版） |
+| 坐标约定 | X=水平, Y=垂直 | X,Y=水平面, **Z=垂直向上** |
+| 求解方法 | Fortran SIGINI | Fortran SIGINI **或** 预计算直接赋值 |
+| 界面选择 | -- | 单选按钮: TIN 插值 / 预计算 |
+| 自动检测 | -- | 根据单元类型自动路由 2D/3D |
+| 复杂几何 | 仅柱状网格 | 预计算方法支持尖灭、透镜体 |
 
-将完整的 `geostatic_initializer_2d` 文件夹复制到 Abaqus 插件搜索目录，例如：
+### 求解方法
 
-```text
-C:\Users\<用户名>\abaqus_plugins\geostatic_initializer_2d
-```
+**方法一: TIN 插值 (Fortran SIGINI)**
+- 通过 Fortran 子程序运行时插值, 速度快
+- 生成 `initial_fields_generated_3d.for`
+- 适用于柱状/拉伸网格
 
-或复制到各版本专属插件路径：
+**方法二: 预计算直接赋值 (无需 Fortran)**
+- Python 预计算所有单元应力和节点孔压
+- 直接将初始条件注入 inp 关键字块
+- 无需 Fortran 编译器
+- 可处理复杂几何 (尖灭、透镜体、不规则层理)
+- 应力值可在 inp 文件中查看审计
 
-```text
-# Abaqus 2024
-<安装目录>\EstProducts\2024\win_b64\code\python3.10\lib\abaqus_plugins\
+### 三维模型注意
 
-# Abaqus 2021
-<安装目录>\EstProducts\2021\win_b64\code\python2.7\lib\abaqus_plugins\
+- Z 轴必须**垂直向上** (地面 = 最大 Z), 重力 -Z
+- 支持 C3D4/6/8/R/10/15/20/R 及孔压版
+- 每个 instance 需单一材料 (多材料用 section assignment 拆分)
 
-# Abaqus 2026
-<安装目录>\EstProducts\2026\win_b64\code\python3.10\lib\abaqus_plugins\
-```
+### 安装与使用
 
-重启 Abaqus/CAE 后，在 Property、Load、Mesh、Job 模块中可通过
-`Plug-ins -> Geostatic Initializer 2D` 访问。
-
-### 使用方法
-
-1. 完成二维分层模型网格划分，并配置好第一个 Geostatic/Deposition 分析步。
-2. 打开插件，点击 **Inspect model**（检查模型）。
-3. 输入已有的 Job 名称和项目输出目录。
-4. 点击 **Generate and apply**（生成并应用）。插件将自动创建装配集、
-   注入带标记保护的 `*INITIAL CONDITIONS, TYPE=STRESS, USER` 关键字块，
-   对于耦合模型还会注入孔压 USER 块，并将生成的 `.for` 文件绑定到 Job。
-   插件不会自动提交计算。
-5. 提交前点击 **Write input and audit**（写入输入文件并审计）进行检查。
-
-项目目录下的 Python 入口文件可在后续修改几何、网格或材料后，
-在 Abaqus/CAE 中重新运行以更新 Fortran 文件。
-
-### 当前限制
-
-- 仅支持二维平面应变或轴对称分层连续体网格。
-- 同一实例中多截面/材料分配按局部单元标签拆分，通过 `GETPARTINFO` 在
-  `SIGINI` 中映射。
-- 密度、孔隙比、饱和度、流体容重和 K0 为常量。
-- 支持的线性孔压单元列表见 `geostatic_initializer_core.py`。
-- 剖面从单元自由边界提取，每个材料区域必须具有恰好两条连续、单值、
-  不相交的上下边界链；孔洞、分支和非单值边界会被阻止而非猜测。
-- 初始水头沿活动局部地表分布，不支持悬挂含水层或隔断含水层。
-- 每个多孔区域必须具有可读的、活动的孔隙比和饱和度场；
-  缺失或模糊的覆盖会阻止生成而非使用默认值。
-- Abaqus/CAE 不通过初始条件 API 暴露 USER 定义的 `SIGINI` 应力，
-  因此本插件通过注入带标记保护的关键字块实现。
-- 创建联合装配集和编辑 `keywordBlock` 的内核 API 调用
-  需要在正式分析前通过 Abaqus/CAE 验证。
-
-## License / 许可证
-
-MIT
+将 `geostatic_initializer_2d` 目录复制到 Abaqus 插件路径, 重启 CAE。
+插件位于 `Plug-ins -> Geostatic Initializer v2 (2D/3D)`。

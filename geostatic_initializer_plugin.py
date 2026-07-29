@@ -10,7 +10,18 @@ toolset.registerGuiMenuButton(
     object=GeostaticInitializerForm(toolset),
     buttonText="Geostatic Initializer 2D",
     kernelInitString="import geostatic_initializer_kernel",
-    applicableModules=("Property", "Load", "Mesh", "Job"),
+    applicableModules=(
+        "Part",
+        "Property",
+        "Assembly",
+        "Step",
+        "Interaction",
+        "Load",
+        "Mesh",
+        "Job",
+        "Visualization",
+        "Optimization",
+    ),
     version="0.1.0",
     author="Codex",
     description=(
@@ -18,4 +29,3 @@ toolset.registerGuiMenuButton(
         "active Abaqus model."
     ),
 )
-

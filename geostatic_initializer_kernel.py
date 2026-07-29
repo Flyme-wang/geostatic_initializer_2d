@@ -16,6 +16,16 @@ try:
         profiles_from_nodes,
     )
     from .geostatic_initializer_generator import write_project_pair
+    from .geostatic_initializer_core_3d import (
+        SUPPORTED_3D_ELEMENT_TYPES,
+        is_3d_pore_element,
+        surfaces_from_free_faces,
+        interpolate_surface,
+        build_plan_3d,
+    )
+    from .geostatic_initializer_generator_3d import (
+        write_project_pair_3d,
+    )
 except (ImportError, ValueError):
     from geostatic_initializer_core import (
         GeostaticModelError,
@@ -25,6 +35,24 @@ except (ImportError, ValueError):
         profiles_from_nodes,
     )
     from geostatic_initializer_generator import write_project_pair
+    from geostatic_initializer_core_3d import (
+        SUPPORTED_3D_ELEMENT_TYPES,
+        is_3d_pore_element,
+        surfaces_from_free_faces,
+        interpolate_surface,
+        build_plan_3d,
+    )
+    from geostatic_initializer_generator_3d import (
+        write_project_pair_3d,
+    )
+    from geostatic_initializer_solver import (
+        Method,
+        precompute_all_stresses,
+    )
+    from geostatic_initializer_generator_precompute import (
+        write_project_pair_precompute,
+        render_keyword_blocks,
+    )
 
 
 BEGIN_MARKER = "** GI2D BEGIN"
@@ -285,6 +313,36 @@ def extract_instance_profile(instance):
     else:
         lower, upper = profiles_from_nodes(nodes)
     return lower, upper, nodes
+
+def _extract_3d_instance_profile(instance):
+    """Extract upper/lower triangulated surfaces for a 3D instance."""
+    nodes_tuple = tuple(instance.nodes)
+    if not nodes_tuple:
+        raise GeostaticModelError("instance %s has no mesh nodes" % instance.name)
+    elements_tuple = tuple(getattr(instance, "elements", ()))
+    upper_tris, lower_tris = surfaces_from_free_faces(elements_tuple, nodes_tuple)
+    return lower_tris, upper_tris
+
+
+def _element_type_set(elements):
+    """Return the set of unique element type strings for a collection."""
+    types = set()
+    for el in elements:
+        try:
+            types.add(str(el.type).upper())
+        except Exception:
+            pass
+    return types
+
+
+def _model_has_3d_elements(model):
+    """Quick check: does the model contain any 3D continuum elements?"""
+    for instance in getattr(model.rootAssembly, "instances", {}).values():
+        for el in getattr(instance, "elements", ()):
+            et = str(getattr(el, "type", "")).upper()
+            if et in SUPPORTED_3D_ELEMENT_TYPES:
+                return True
+    return False
 
 
 def numeric_field_value(field, names):
@@ -846,6 +904,140 @@ def inspect_model(model, gravity=10.0, k0=1.0):
     return plan
 
 
+
+def inspect_model_3d(model, gravity=10.0, k0=1.0):
+    """Inspect a 3D model and build a geostatic plan (Z = vertical upward)."""
+    first_step = _first_analysis_step(model)
+    removed = collect_first_step_removed_instances(model, first_step)
+    removed_set = set(removed)
+    regions = []
+    all_element_types = []
+
+    for instance_name, instance in model.rootAssembly.instances.items():
+        if instance_name in removed_set or not len(instance.elements):
+            continue
+
+        element_types = _element_type_set(instance.elements)
+        element_types_3d = tuple(sorted(
+            et for et in element_types if et in SUPPORTED_3D_ELEMENT_TYPES
+        ))
+        if not element_types_3d:
+            continue
+        all_element_types.extend(element_types_3d)
+
+        try:
+            lower_tris, upper_tris = _extract_3d_instance_profile(instance)
+        except GeostaticModelError:
+            raise
+
+        part_name = str(getattr(instance, "partName", ""))
+        if not part_name:
+            part_name = str(getattr(getattr(instance, "part", None), "name", ""))
+        part = model.parts[part_name]
+        assignments = tuple(part.sectionAssignments)
+        if not assignments:
+            raise GeostaticModelError("%s has no section assignment" % instance_name)
+
+        element_by_label = dict((int(e.label), e) for e in instance.elements)
+        covered = set()
+
+        for assign_index, assignment in enumerate(assignments):
+            labels = _section_assignment_element_labels(assignment)
+            if not labels and len(assignments) == 1:
+                labels = tuple(sorted(element_by_label))
+            if not labels:
+                raise GeostaticModelError(
+                    "%s section assignment has no mesh elements" % instance_name
+                )
+            overlap = covered.intersection(labels)
+            if overlap:
+                raise GeostaticModelError(
+                    "%s section assignments overlap element labels" % instance_name
+                )
+            covered.update(labels)
+
+            try:
+                selected_elements = tuple(element_by_label[label] for label in labels)
+            except KeyError:
+                raise GeostaticModelError(
+                    "%s section assignment references unknown elements" % instance_name
+                )
+
+            sec_elem_types = tuple(sorted(set(
+                str(el.type).upper() for el in selected_elements
+            )))
+            porous = bool(
+                sec_elem_types and all(is_3d_pore_element(v) for v in sec_elem_types)
+            )
+
+            section = model.sections[assignment.sectionName]
+            material_name = str(section.material)
+            material = model.materials[material_name]
+
+            node_labels_set = set()
+            for el in selected_elements:
+                try:
+                    nds = el.getNodes()
+                except Exception:
+                    connectivity = tuple(int(v) for v in el.connectivity)
+                    inst_nodes = tuple(instance.nodes)
+                    for ci in connectivity:
+                        if 0 <= ci < len(inst_nodes):
+                            node_labels_set.add(int(inst_nodes[ci].label))
+                    continue
+                for n in nds:
+                    node_labels_set.add(int(n.label))
+
+            raw = {
+                "region_id": "%s::%s" % (instance_name, assignment.sectionName),
+                "instance": str(instance_name),
+                "material": material_name,
+                "element_types": sec_elem_types,
+                "element_labels": labels,
+                "node_labels": tuple(sorted(node_labels_set)),
+                "density": _constant_density(material, instance_name),
+                "k0": float(k0),
+                "upper_triangles": upper_tris,
+                "lower_triangles": lower_tris,
+            }
+            if porous:
+                specific_weight, void_ratio, saturation = _porous_properties(
+                    model, instance_name, material
+                )
+                raw.update(
+                    specific_weight=specific_weight,
+                    void_ratio=void_ratio,
+                    saturation=saturation,
+                )
+            regions.append(raw)
+
+        if covered != set(element_by_label):
+            raise GeostaticModelError(
+                "%s section assignments do not cover every element" % instance_name
+            )
+
+    step_types = tuple(
+        step.__class__.__name__
+        for name, step in model.steps.items()
+        if str(name) != "Initial"
+    )
+    coupled_step = any(
+        "SOILS" in v.upper() or "POREFLUID" in v.upper() or "CONSOLIDATION" in v.upper()
+        for v in step_types
+    )
+    plan = build_plan_3d(
+        getattr(model, "name", "active-model"),
+        tuple(regions),
+        first_step_removed=removed,
+        gravity=gravity,
+        coupled_step=coupled_step,
+    )
+    plan["analysis_step_types"] = step_types
+    return plan
+
+
+
+
 def _replace_assembly_set(assembly, name, entity_groups, entity_name):
     from abaqusConstants import UNION
 
@@ -1087,6 +1279,141 @@ def regenerate_project_pair(model_name, output_dir, gravity=10.0, k0=1.0):
     return {"plan": plan, "paths": paths}
 
 
+def regenerate_project_pair_3d(model_name, output_dir, gravity=10.0, k0=1.0):
+    from abaqus import mdb
+
+    model = mdb.models[model_name]
+    plan = inspect_model_3d(model, gravity=gravity, k0=k0)
+    paths = write_project_pair_3d(output_dir, plan)
+    return {"plan": plan, "paths": paths}
+
+
+
+def _generate_and_apply_precompute(mdb, model_name, job_name, output_dir,
+                                    gravity=10.0, k0=1.0, is_3d=True):
+    """Generate pre-computed initial conditions and inject into keyword block."""
+    import tempfile
+    model = mdb.models[model_name]
+    job = _resolve_job(mdb, model_name, job_name)
+
+    # Build plan (3D or 2D)
+    if is_3d:
+        plan = inspect_model_3d(model, gravity=gravity, k0=k0)
+    else:
+        plan = inspect_model(model, gravity=gravity, k0=k0)
+
+    # Collect element centroids and node coords
+    assembly = model.rootAssembly
+    elements_data = []
+    nodes_data = []
+
+    for region in plan["regions"]:
+        inst_name = region["instance"]
+        instance = assembly.instances[inst_name]
+        el_labels = region.get("element_labels", ())
+
+        if el_labels:
+            elements = instance.elements.sequenceFromLabels(labels=list(el_labels))
+        else:
+            elements = instance.elements
+
+        for el in elements:
+            # Compute element centroid
+            try:
+                nds = el.getNodes()
+            except Exception:
+                connectivity = tuple(int(v) for v in el.connectivity)
+                inst_nodes = tuple(instance.nodes)
+                nds = tuple(
+                    inst_nodes[i] if 0 <= i < len(inst_nodes) else None
+                    for i in connectivity
+                )
+                nds = tuple(n for n in nds if n is not None)
+            if not nds:
+                continue
+            cx = sum(float(n.coordinates[0]) for n in nds) / len(nds)
+            cy = sum(float(n.coordinates[1]) for n in nds) / len(nds)
+            cz = sum(float(n.coordinates[2]) for n in nds) / len(nds)
+            elements_data.append((int(el.label), inst_name, cx, cy, cz))
+
+            # Collect unique nodes for pore pressure
+            if region.get("porous"):
+                for n in nds:
+                    nodes_data.append((int(n.label), inst_name,
+                                       float(n.coordinates[0]),
+                                       float(n.coordinates[1]),
+                                       float(n.coordinates[2])))
+
+    # Pre-compute
+    el_stresses, nd_pressures = precompute_all_stresses(
+        plan, tuple(elements_data), tuple(nodes_data)
+    )
+
+    # Write keyword blocks
+    staging_parent = os.path.abspath(output_dir)
+    if not os.path.isdir(staging_parent):
+        os.makedirs(staging_parent)
+    staging_dir = tempfile.mkdtemp(prefix=".gi2d-pc-", dir=staging_parent)
+    try:
+        paths = write_project_pair_precompute(
+            staging_dir, plan, el_stresses, nd_pressures
+        )
+
+        # Inject into model keyword block
+        keyword_text = render_keyword_blocks(plan, el_stresses, nd_pressures)
+        _inject_keyword_block(model, keyword_text)
+
+        # Commit
+        final_paths = _commit_staged_project_pair(paths, output_dir)
+        # No Fortran subroutine to set on job
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+    applied = apply_plan(model, plan)
+    return {"plan": plan, "paths": final_paths, "applied": applied, "job": job.name}
+
+
+def _inject_keyword_block(model, keyword_text):
+    """Inject GI2D keyword block before the first *STEP in the model."""
+    keyword_block = model.keywordBlock
+    keyword_block.synchVersions(storeNodesAndElements=False)
+    blocks = tuple(keyword_block.sieBlocks)
+
+    # Remove existing GI2D blocks
+    cleaned = []
+    skipping = False
+    for block in blocks:
+        block_str = str(block)
+        if "** GI2D BEGIN" in block_str:
+            skipping = True
+            if "** GI2D END" in block_str:
+                skipping = False
+            continue
+        if skipping:
+            if "** GI2D END" in block_str:
+                skipping = False
+            continue
+        cleaned.append(block)
+
+    step_index = next(
+        (i for i, blk in enumerate(cleaned)
+         if str(blk).lstrip().upper().startswith("*STEP")),
+        len(cleaned),
+    )
+    cleaned.insert(step_index, keyword_text)
+
+    # Replace all blocks
+    for i in range(len(cleaned)):
+        if i < len(blocks):
+            keyword_block.replace(i, cleaned[i])
+        else:
+            keyword_block.insert(i, cleaned[i])
+    for i in range(len(cleaned), len(blocks)):
+        keyword_block.replace(i, "** GI2D superseded")
+
+
+
+
 def _snapshot_generated_model_state(model):
     """Capture the plugin-owned model state needed for failure rollback."""
     assembly = getattr(model, "rootAssembly", None)
@@ -1216,8 +1543,31 @@ def _generate_and_apply(
     return {"plan": plan, "paths": paths, "applied": applied, "job": job.name}
 
 
-def generate_and_apply(model_name, job_name, output_dir, gravity=10.0, k0=1.0):
+def generate_and_apply(model_name, job_name, output_dir, gravity=10.0, k0=1.0, method="tin"):
     from abaqus import mdb
+
+    model = mdb.models[model_name]
+    is_3d = _model_has_3d_elements(model)
+
+    # Pre-compute path: no Fortran, direct keyword injection
+    if method == "precompute":
+        return _generate_and_apply_precompute(
+            mdb, model_name, job_name, output_dir,
+            gravity=gravity, k0=k0, is_3d=is_3d,
+        )
+
+    # Fortran path (TIN or raycast) – use appropriate inspector/writer
+    if is_3d:
+        return _generate_and_apply(
+            mdb,
+            model_name,
+            job_name,
+            output_dir,
+            gravity=gravity,
+            k0=k0,
+            inspector=inspect_model_3d,
+            writer=write_project_pair_3d,
+        )
     return _generate_and_apply(
         mdb,
         model_name,
@@ -1283,7 +1633,10 @@ def dispatch_action(
     if not model_name:
         model_name = list(mdb.models.keys())[-1]
     if action == "inspect":
-        return inspect_model(mdb.models[model_name], gravity=gravity, k0=k0)
+        model = mdb.models[model_name]
+        if _model_has_3d_elements(model):
+            return inspect_model_3d(model, gravity=gravity, k0=k0)
+        return inspect_model(model, gravity=gravity, k0=k0)
     if action == "generate":
         return generate_and_apply(
             model_name, job_name, output_dir, gravity=gravity, k0=k0
