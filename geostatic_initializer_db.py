@@ -8,6 +8,7 @@ class GeostaticInitializerDB(AFXDataDialog):
     ID_INSPECT = AFXDataDialog.ID_LAST + 1
     ID_GENERATE = AFXDataDialog.ID_LAST + 2
     ID_AUDIT = AFXDataDialog.ID_LAST + 3
+    ID_INFO = AFXDataDialog.ID_LAST + 4
 
     def __init__(self, form):
         self.form = form  # store form ref for onCmdMethod
@@ -36,17 +37,14 @@ class GeostaticInitializerDB(AFXDataDialog):
         )
 
         method_gb = FXGroupBox(self, "Solving method", FRAME_GROOVE | LAYOUT_FILL_X)
-        method_row = FXHorizontalFrame(method_gb, LAYOUT_FILL_X)
-        FXLabel(method_row, "Method:")
-        self.method_combo = FXComboBox(method_row, 25, 2, self, 1000 + 1,
+        FXLabel(method_gb, "Method:")
+        self.method_combo = FXComboBox(method_gb, 25, 2, self, 1000 + 1,
                                        LAYOUT_FILL_X)
         self.method_combo.appendItem("TIN surface (Fortran SIGINI)")
         self.method_combo.appendItem("Pre-compute direct assign (no Fortran)")
         self.method_combo.setCurrentItem(0)
-        self.method_info_btn = FXButton(method_row, " ? ", self, 1000 + 3)
         FXMAPFUNC(self, SEL_COMMAND, 1000 + 1, GeostaticInitializerDB.onCmdMethod)
         FXMAPFUNC(self, SEL_CHANGED, 1000 + 1, GeostaticInitializerDB.onCmdMethod)
-        FXMAPFUNC(self, SEL_COMMAND, 1000 + 3, GeostaticInitializerDB.onCmdMethodInfo)
         self.method_value = "tin"
         form.methodKw.setValue("tin")
 
@@ -57,6 +55,10 @@ class GeostaticInitializerDB(AFXDataDialog):
         ):
             self.appendActionButton(label, self, message_id)
             FXMAPFUNC(self, SEL_COMMAND, message_id, AFXDataDialog.onCmdApply)
+
+        self.appendActionButton("Method info", self, self.ID_INFO)
+        FXMAPFUNC(self, SEL_COMMAND, self.ID_INFO, GeostaticInitializerDB.onCmdMethodInfo)
+
         self.appendActionButton(self.CANCEL)
 
     def onCmdMethodInfo(self, sender, sel, ptr):
