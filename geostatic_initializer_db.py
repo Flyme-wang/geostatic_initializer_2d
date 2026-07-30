@@ -1,4 +1,4 @@
-"""Minimal AFX dialog for Geostatic Initializer 2D."""
+"""Minimal AFX dialog for Geostatic Initializer v2 (2D/3D)."""
 
 from abaqusGui import *
 from abaqusConstants import *
@@ -13,7 +13,7 @@ class GeostaticInitializerDB(AFXDataDialog):
         AFXDataDialog.__init__(
             self,
             form,
-            "Geostatic Initializer 2D",
+            "Geostatic Initializer v2 (2D/3D)",
             0,
             DIALOG_ACTIONS_SEPARATOR | DIALOG_ACTIONS_RIGHT,
         )
@@ -35,8 +35,8 @@ class GeostaticInitializerDB(AFXDataDialog):
         )
 
         method_gb = FXGroupBox(self, "Solving method", FRAME_GROOVE | LAYOUT_FILL_X)
-        self.method_tin = AFXRadioButton(method_gb, "TIN Interpolation (Fortran SIGINI, fast)", None, 0, LAYOUT_FILL_X)
-        self.method_precompute = AFXRadioButton(method_gb, "Pre-compute & Direct Assign (no Fortran, robust)", None, 0, LAYOUT_FILL_X)
+        self.method_tin = FXRadioButton(method_gb, "TIN Interpolation (Fortran SIGINI, fast)", self, 0, LAYOUT_FILL_X)
+        self.method_precompute = FXRadioButton(method_gb, "Pre-compute & Direct Assign (no Fortran, robust)", self, 0, LAYOUT_FILL_X)
         self.method_tin.setCheck(True)
         self.method_tin.setSelector(1000 + 1)
         self.method_precompute.setSelector(1000 + 2)
@@ -52,6 +52,8 @@ class GeostaticInitializerDB(AFXDataDialog):
         ):
             self.appendActionButton(label, self, message_id)
             FXMAPFUNC(self, SEL_COMMAND, message_id, AFXDataDialog.onCmdApply)
+        self.appendActionButton(self.CANCEL)
+
     def onCmdMethod(self, sender, sel, ptr):
         if sender == self.method_tin:
             self.method_value = "tin"
@@ -59,5 +61,3 @@ class GeostaticInitializerDB(AFXDataDialog):
         elif sender == self.method_precompute:
             self.method_value = "precompute"
             self.form.methodKw.setValue("precompute")
-
-        self.appendActionButton(self.CANCEL)
